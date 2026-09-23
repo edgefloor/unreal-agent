@@ -613,11 +613,14 @@ func (current *coordinator) addItemToLocalState(
 		if current.state.currentTurnType == session.TurnCompaction && response.TurnID == current.state.currentTurnID {
 			return item, nil
 		}
-		// The complete output includes messages, reasoning, and tool calls.
-		current.dependencies.ContextBuilder.AddModelResponse(response.Response)
 		if response.TurnID == current.state.currentTurnID {
 			current.state.deliveredInputs = current.state.currentTurnInputs
 		}
+		if response.Response.Failure != nil {
+			break
+		}
+		// The complete output includes messages, reasoning, and tool calls.
+		current.dependencies.ContextBuilder.AddModelResponse(response.Response)
 		current.addToolCallsToLocalState(response)
 
 	case sessionstore.ItemToolCallStatus:
