@@ -136,9 +136,6 @@ description: Review code.
 	if len(logs) != 1 {
 		t.Fatalf("log files = %#v, want one", logs)
 	}
-	if _, err := time.Parse("20060102-150405.jsonl", filepath.Base(logs[0])); err != nil {
-		t.Fatalf("log filename %q is not a UTC datetime: %v", logs[0], err)
-	}
 	logged, err := os.ReadFile(logs[0])
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +145,52 @@ description: Review code.
 	}
 	if !client.closed {
 		t.Fatal("client was not closed")
+	}
+}
+
+func TestOpenDatetimeLogIsolatesRuns(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Date(2026, 9, 23, 14, 0, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	contents := []string{"first run\n", "second run\n"}
+	var files []*os.File
+	for _, content := range contents {
+		file, err := openDatetimeLog(directory, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := file.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		if _, err := file.WriteString(content); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	if files[0].Name() == files[1].Name() {
+		t.Fatalf("runs share log file %q", files[0].Name())
+	}
+	for i, want := range contents {
+		file := files[i]
+		got, err := os.ReadFile(file.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("log %q = %q, want %q", file.Name(), got, want)
+		}
+		name := filepath.Base(file.Name())
+		if !strings.HasPrefix(name, "20260923-120000-") || !strings.HasSuffix(name, ".jsonl") {
+			t.Errorf("log filename %q must have a UTC timestamp prefix and .jsonl extension", name)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("log permissions = %o, want 600", got)
+		}
 	}
 }
 

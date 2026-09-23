@@ -83,7 +83,7 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 			requests := 0
 			var history []sessionstore.Item
 			var allLogged []sessionstore.Item
-			var previousLog []byte
+			previousLogs := make(map[string][]byte)
 			logDirectory := filepath.Join(workspace, "logs")
 			for run := range 3 {
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -142,22 +142,24 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 					t.Fatal("runner did not close the client")
 				}
 				entries, err := os.ReadDir(logDirectory)
-				if err != nil || len(entries) == 0 {
-					t.Fatalf("log files = %v, error = %v", entries, err)
+				if err != nil || len(entries) != run+1 {
+					t.Fatalf("log files = %v, error = %v, want %d files", entries, err, run+1)
 				}
-				var combined []byte
+				var logged []byte
 				for _, entry := range entries {
-					logged, err := os.ReadFile(filepath.Join(logDirectory, entry.Name()))
+					content, err := os.ReadFile(filepath.Join(logDirectory, entry.Name()))
 					if err != nil {
 						t.Fatal(err)
 					}
-					combined = append(combined, logged...)
+					if previous, exists := previousLogs[entry.Name()]; exists {
+						if !bytes.Equal(content, previous) {
+							t.Fatalf("resuming changed previous log %q", entry.Name())
+						}
+						continue
+					}
+					logged = content
+					previousLogs[entry.Name()] = content
 				}
-				if !bytes.HasPrefix(combined, previousLog) {
-					t.Fatal("resuming changed the previous file log")
-				}
-				logged := combined[len(previousLog):]
-				previousLog = combined
 				if run == 0 && mode == 3 {
 					if !bytes.HasPrefix(logged, stdout.Bytes()) || len(logged) == stdout.Len() {
 						t.Fatal("file log did not preserve the record whose stdout write failed")

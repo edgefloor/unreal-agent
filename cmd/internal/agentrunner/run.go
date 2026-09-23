@@ -506,8 +506,7 @@ func openDatetimeLog(directory string, now time.Time) (*os.File, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	path := filepath.Join(directory, now.UTC().Format("20060102-150405")+".jsonl")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.CreateTemp(directory, now.UTC().Format("20060102-150405")+"-*.jsonl")
 	if err != nil {
 		return nil, fmt.Errorf("open session log: %w", err)
 	}
