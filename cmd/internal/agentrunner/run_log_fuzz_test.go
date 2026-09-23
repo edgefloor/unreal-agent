@@ -86,6 +86,8 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 			previousLogs := make(map[string][]byte)
 			logDirectory := filepath.Join(workspace, "logs")
 			for run := range 3 {
+				injectedBeforeRun := injected
+				var failure *llm.Failure
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 				client := &fakeClient{respond: func(ctx context.Context, request llm.Request) (llm.Response, error) {
 					if request.Model.ID != "journal-model" || request.Model.ReasoningEffort != llm.ReasoningEffortHigh {
@@ -107,6 +109,7 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 						return llm.Response{}, errors.New("settled execution requested another model response")
 					}
 					response := responses[len(returned)]
+					failure = response.Failure
 					returned = append(returned, response)
 					return copyLogResponse(response), nil
 				}}
@@ -122,20 +125,26 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 						}
 						return ""
 					}, func() []string { return nil }, bytes.NewReader(encodedRequest), destination, io.Discard, testConfig(client))
+				settled := err == nil
 				cancel()
 				synctest.Wait()
 				var wantErr error
-				if run == 0 {
-					switch mode {
-					case 1:
-						wantErr = providerFailure
-					case 2:
+				if injected != injectedBeforeRun {
+					wantErr = providerFailure
+					if mode == 2 {
 						wantErr = context.Canceled
-					case 3:
-						wantErr = outputFailure
 					}
 				}
-				if !errors.Is(err, wantErr) {
+				outputFailed := false
+				if writer, ok := destination.(*fuzzLogOutput); ok && writer.failed {
+					wantErr = outputFailure
+					outputFailed = true
+				}
+				if wantErr == nil && failure != nil {
+					if err == nil || !strings.Contains(err.Error(), failure.Code) || !strings.Contains(err.Error(), failure.Message) {
+						t.Fatalf("run %d: error = %v, want model failure", run, err)
+					}
+				} else if !errors.Is(err, wantErr) {
 					t.Fatalf("run %d: error = %v, want %v", run, err, wantErr)
 				}
 				if !client.closed {
@@ -160,7 +169,7 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 					logged = content
 					previousLogs[entry.Name()] = content
 				}
-				if run == 0 && mode == 3 {
+				if outputFailed {
 					if !bytes.HasPrefix(logged, stdout.Bytes()) || len(logged) == stdout.Len() {
 						t.Fatal("file log did not preserve the record whose stdout write failed")
 					}
@@ -181,7 +190,10 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 				}
 				history = nextHistory
 				allLogged = append(allLogged, items...)
-				assertExecutionLog(t, allLogged, returned, requests, text, skillContent, validCalls, run+1, run > 0 || mode == 0)
+				assertExecutionLog(t, allLogged, returned, requests, text, skillContent, validCalls, run+1, settled)
+				if failure != nil {
+					return
+				}
 				if run > 0 {
 					resumed, err := store.Resume(t.Context(), id)
 					if err != nil || len(resumed.Operations) != 0 {
@@ -312,6 +324,7 @@ func assertExecutionLog(t *testing.T, items []sessionstore.Item, returned []llm.
 type fuzzLogOutput struct {
 	output    io.Writer
 	responses int
+	failed    bool
 	err       error
 }
 
@@ -322,6 +335,7 @@ func (writer *fuzzLogOutput) Write(data []byte) (int, error) {
 	}
 	if item.Kind == sessionstore.ItemModelResponse {
 		if writer.responses == 0 {
+			writer.failed = true
 			return 0, writer.err
 		}
 		writer.responses--
