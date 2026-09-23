@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -15,8 +16,75 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
+
+func TestCoordinatorModelFailurePreventsToolScheduling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		run := newToolGraceTestRun(t)
+		run.start(t)
+		run.input(t, externalEvent(t, 0, "input", "run tool"))
+		response := toolGraceResponse("A")
+		response.Failure = &llm.Failure{Code: "insufficient_quota", Message: "fixture failure"}
+		run.respond(t, 0, response)
+		select {
+		case err := <-run.done:
+			if err == nil || !strings.Contains(err.Error(), response.Failure.Code) || !strings.Contains(err.Error(), response.Failure.Message) {
+				t.Fatalf("Run error = %v, want model failure code and message", err)
+			}
+		default:
+			t.Fatal("Run did not return the model failure")
+		}
+		if len(run.store.appendedResponses) != 1 || !reflect.DeepEqual(run.store.appendedResponses[0].Response, response) {
+			t.Fatalf("persisted responses = %#v, want failed response", run.store.appendedResponses)
+		}
+		if len(run.store.appendedStatuses) != 0 || len(run.operations.adds) != 0 || len(run.calls) != 1 {
+			t.Fatal("model failure scheduled tools or started another request")
+		}
+	})
+}
+
+func TestCoordinatorResumeDoesNotScheduleFailedResponseToolCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store, err := localfile.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Create(t.Context(), "session-1"); err != nil {
+			t.Fatal(err)
+		}
+		run := newToolGraceTestRun(t)
+		restoreTestRun(t, run, store)
+		run.start(t)
+		run.input(t, externalEvent(t, 0, "input", "run tool"))
+		response := toolGraceResponse("A")
+		response.Failure = &llm.Failure{Code: "insufficient_quota", Message: "fixture failure"}
+		run.respond(t, 0, response)
+		if err := <-run.done; err == nil {
+			t.Fatal("failed response did not stop the first run")
+		}
+		page, err := store.Items(t.Context(), "session-1", sessionstore.BeforeFirst, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 3 || !reflect.DeepEqual(page.Items[2].Data.(sessionstore.ModelResponse).Response, response) {
+			t.Fatalf("failed response was not persisted: %#v", page.Items)
+		}
+
+		resumed := newToolGraceTestRun(t)
+		restoreTestRun(t, resumed, store)
+		resumed.start(t)
+		if len(resumed.operations.adds) != 0 {
+			t.Fatalf("failed response dispatched operations on resume: %#v", resumed.operations.adds)
+		}
+		resumed.input(t, stopInput(t, "stop", inbox.StopWhenIdle))
+		resumed.assertStopped(t)
+		if len(resumed.calls) != 0 {
+			t.Fatalf("resume started %d model requests", len(resumed.calls))
+		}
+	})
+}
 
 func TestCoordinatorRunReturnsDispatchErrorForNewOperation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
