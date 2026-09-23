@@ -5,12 +5,13 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/unreallabsai/unreal-agent/cmd/internal/agentrunner"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	os.Exit(agentrunner.RunMain(
 		ctx, os.Args[1:], os.Getenv, os.Environ,
