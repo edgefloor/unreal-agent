@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -17,6 +18,31 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
+
+func TestCoordinatorModelFailurePreventsToolScheduling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		run := newToolGraceTestRun(t)
+		run.start(t)
+		run.input(t, externalEvent(t, 0, "input", "run tool"))
+		response := toolGraceResponse("A")
+		response.Failure = &llm.Failure{Code: "insufficient_quota", Message: "fixture failure"}
+		run.respond(t, 0, response)
+		select {
+		case err := <-run.done:
+			if err == nil || !strings.Contains(err.Error(), response.Failure.Code) || !strings.Contains(err.Error(), response.Failure.Message) {
+				t.Fatalf("Run error = %v, want model failure code and message", err)
+			}
+		default:
+			t.Fatal("Run did not return the model failure")
+		}
+		if len(run.store.appendedResponses) != 1 || !reflect.DeepEqual(run.store.appendedResponses[0].Response, response) {
+			t.Fatalf("persisted responses = %#v, want failed response", run.store.appendedResponses)
+		}
+		if len(run.store.appendedStatuses) != 0 || len(run.operations.adds) != 0 || len(run.calls) != 1 {
+			t.Fatal("model failure scheduled tools or started another request")
+		}
+	})
+}
 
 func TestCoordinatorRunReturnsDispatchErrorForNewOperation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

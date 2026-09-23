@@ -464,6 +464,9 @@ func (current *coordinator) handleModelResponse(
 	if err := current.storeItemInSessionStore(ctx, item); err != nil {
 		return nil, err
 	}
+	if failure := response.Response.Failure; failure != nil {
+		return nil, fmt.Errorf("model response for turn %q failed: %s: %s", response.TurnID, failure.Code, failure.Message)
+	}
 	if current.state.currentTurnType == session.TurnCompaction && response.TurnID == current.state.currentTurnID {
 		return nil, nil
 	}
