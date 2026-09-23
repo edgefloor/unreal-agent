@@ -113,9 +113,11 @@ func FuzzCoordinatorLogMatchesExecution(f *testing.F) {
 				}
 				return nil
 			}
+			var failure *llm.Failure
 			complete := func(call *logModelCall, variant byte) {
 				t.Helper()
 				response := fuzzLogResponse(t, text, usage, call.index, variant)
+				failure = response.Failure
 				select {
 				case call.response <- response:
 				case <-call.ctx.Done():
@@ -127,10 +129,14 @@ func FuzzCoordinatorLogMatchesExecution(f *testing.F) {
 				synctest.Wait()
 			}
 			pending := nextCall()
+		processing:
 			for _, action := range actions {
 				switch action % 3 {
 				case 0:
 					complete(pending, action)
+					if failure != nil {
+						break processing
+					}
 					submitMessage()
 					pending = nextCall()
 				case 1:
@@ -157,10 +163,10 @@ func FuzzCoordinatorLogMatchesExecution(f *testing.F) {
 				mode = actions[len(actions)-1] % 3
 			}
 			var wantErr error
-			if mode == 2 {
+			if failure == nil && mode == 2 {
 				cancel()
 				wantErr = context.Canceled
-			} else {
+			} else if failure == nil {
 				stop := inbox.StopWhenIdle
 				if mode == 1 {
 					stop = inbox.StopHard
@@ -170,7 +176,11 @@ func FuzzCoordinatorLogMatchesExecution(f *testing.F) {
 					complete(pending, byte(len(actions)))
 				}
 			}
-			if err := <-done; !errors.Is(err, wantErr) {
+			if err := <-done; failure != nil {
+				if err == nil || !strings.Contains(err.Error(), failure.Code) || !strings.Contains(err.Error(), failure.Message) {
+					t.Fatalf("coordinator error = %v, want model failure", err)
+				}
+			} else if !errors.Is(err, wantErr) {
 				t.Fatalf("coordinator error = %v, want %v", err, wantErr)
 			}
 			cancel()
